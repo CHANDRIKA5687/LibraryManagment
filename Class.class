@@ -1,0 +1,182 @@
+package java.lang;
+
+import java.lang.annotation.Annotation;
+import java.lang.constant.ClassDesc;
+import java.lang.invoke.TypeDescriptor;
+import java.lang.invoke.MethodHandles;
+import java.lang.module.ModuleReader;
+import java.lang.ref.SoftReference;
+import java.io.IOException;
+import java.io.InputStream;
+import java.io.ObjectStreamField;
+import java.lang.reflect.AnnotatedElement;
+import java.lang.reflect.AnnotatedType;
+import java.lang.reflect.Array;
+import java.lang.reflect.Constructor;
+import java.lang.reflect.Executable;
+import java.lang.reflect.Field;
+import java.lang.reflect.GenericArrayType;
+import java.lang.reflect.GenericDeclaration;
+import java.lang.reflect.InvocationTargetException;
+import java.lang.reflect.Member;
+import java.lang.reflect.Method;
+import java.lang.reflect.Modifier;
+import java.lang.reflect.Proxy;
+import java.lang.reflect.RecordComponent;
+import java.lang.reflect.Type;
+import java.lang.reflect.TypeVariable;
+import java.lang.constant.Constable;
+import java.net.URL;
+import java.security.AccessController;
+import java.security.PrivilegedAction;
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.Collection;
+import java.util.HashMap;
+import java.util.HashSet;
+import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
+import java.util.List;
+import java.util.Map;
+import java.util.Objects;
+import java.util.Optional;
+import java.util.Set;
+import java.util.stream.Collectors;
+
+import jdk.internal.loader.BootLoader;
+import jdk.internal.loader.BuiltinClassLoader;
+import jdk.internal.misc.Unsafe;
+import jdk.internal.module.Resources;
+import jdk.internal.reflect.CallerSensitive;
+import jdk.internal.reflect.CallerSensitiveAdapter;
+import jdk.internal.reflect.ConstantPool;
+import jdk.internal.reflect.Reflection;
+import jdk.internal.reflect.ReflectionFactory;
+import jdk.internal.vm.annotation.ForceInline;
+import jdk.internal.vm.annotation.IntrinsicCandidate;
+import sun.invoke.util.Wrapper;
+import sun.reflect.generics.factory.CoreReflectionFactory;
+import sun.reflect.generics.factory.GenericsFactory;
+import sun.reflect.generics.repository.ClassRepository;
+import sun.reflect.generics.repository.MethodRepository;
+import sun.reflect.generics.repository.ConstructorRepository;
+import sun.reflect.generics.scope.ClassScope;
+import sun.security.util.SecurityConstants;
+import sun.reflect.annotation.*;
+import sun.reflect.misc.ReflectUtil;
+public final class Class<T> implements java.io.Serializable,
+                              GenericDeclaration,
+                              Type,
+                              AnnotatedElement,
+                              TypeDescriptor.OfField<Class<?>>,
+                              Constable {
+    private static final int ANNOTATION= 0x00002000;
+    private static final int ENUM      = 0x00004000;
+    private static final int SYNTHETIC = 0x00001000;
+
+    private static native void registerNatives();
+    static {
+        registerNatives();
+    }
+    private Class(ClassLoader loader, Class<?> arrayComponentType) {
+        // Initialize final field for classLoader.  The initialization value of non-null
+        // prevents future JIT optimizations from assuming this final field is null.
+        classLoader = loader;
+        componentType = arrayComponentType;
+    } public String toString() {
+        String kind = isInterface() ? "interface " : isPrimitive() ? "" : "class ";
+        return kind.concat(getName());
+    }
+    public String toGenericString() {
+        if (isPrimitive()) {
+            return toString();
+        } else {
+            StringBuilder sb = new StringBuilder();
+            Class<?> component = this;
+            int arrayDepth = 0;
+
+            if (isArray()) {
+                do {
+                    arrayDepth++;
+                    component = component.getComponentType();
+                } while (component.isArray());
+                sb.append(component.getName());
+            } else {
+                // Class modifiers are a superset of interface modifiers
+                int modifiers = getModifiers() & Modifier.classModifiers();
+                if (modifiers != 0) {
+                    sb.append(Modifier.toString(modifiers));
+                    sb.append(' ');
+                }
+
+                if (isAnnotation()) {
+                    sb.append('@');
+                }
+                if (isInterface()) { // Note: all annotation interfaces are interfaces
+                    sb.append("interface");
+                } else {
+                    if (isEnum())
+                        sb.append("enum");
+                    else if (isRecord())
+                        sb.append("record");
+                    else
+                        sb.append("class");
+                }
+                sb.append(' ');
+                sb.append(getName());
+            }
+
+            TypeVariable<?>[] typeparms = component.getTypeParameters();
+            if (typeparms.length > 0) {
+                sb.append(Arrays.stream(typeparms)
+                          .map(Class::typeVarBounds)
+                          .collect(Collectors.joining(",", "<", ">")));
+            }
+
+            if (arrayDepth > 0) sb.append("[]".repeat(arrayDepth));
+
+            return sb.toString();
+        }
+    }
+
+    static String typeVarBounds(TypeVariable<?> typeVar) {
+        Type[] bounds = typeVar.getBounds();
+        if (bounds.length == 1 && bounds[0].equals(Object.class)) {
+            return typeVar.getName();
+        } else {
+            return typeVar.getName() + " extends " +
+                Arrays.stream(bounds)
+                .map(Type::getTypeName)
+                .collect(Collectors.joining(" & "));
+        }
+    }
+
+
+    @CallerSensitive
+    public static Class<?> forName(String className)
+                throws ClassNotFoundException {
+        Class<?> caller = Reflection.getCallerClass();
+        return forName(className, caller);
+    }
+
+    // Caller-sensitive adapter method for reflective invocation
+    @CallerSensitiveAdapter
+    private static Class<?> forName(String className, Class<?> caller)
+            throws ClassNotFoundException {
+        return forName0(className, true, ClassLoader.getClassLoader(caller), caller);
+    }
+    @CallerSensitive
+    public static Class<?> forName(String name, boolean initialize,
+                                   ClassLoader loader)
+        throws ClassNotFoundException
+    {
+        Class<?> caller = null;
+        @SuppressWarnings("removal")
+        SecurityManager sm = System.getSecurityManager();
+        if (sm != null) {
+            // Reflective call to get caller class is only needed if a security manager
+            // is present.  Avoid the overhead of making this call otherwise.
+            caller = Reflection.getCallerClass();
+        }
+        return forName(name, initialize, loader, caller);
+    }
